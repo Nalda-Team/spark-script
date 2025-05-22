@@ -25,9 +25,10 @@ def get_spark_session(local_flag='Y'):
         .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS") \
         .config("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
         .config("spark.hadoop.google.cloud.auth.service.account.json.keyfile", os.path.abspath(SERVICE_ACCOUNT_KEY_PATH)) \
-        .config("spark.driver.maxResultSize", "2g") \
-        .config("spark.driver.memory", "4g") \
-        .config("spark.executor.memory", "10g") \
+        .config("spark.driver.maxResultSize", "2560m") \
+        .config("spark.driver.memory", "2560mg") \
+        .config("spark.executor.memory", "2560m") \
+        .config("spark.sql.shuffle.partitions", '4') \
         .getOrCreate()
 
     # Hadoop 설정 추가
