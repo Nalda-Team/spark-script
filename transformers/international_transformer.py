@@ -1,4 +1,3 @@
-from itertools import chain
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
     col, input_file_name, regexp_extract,
@@ -11,8 +10,7 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import StringType, IntegerType
 
 
-def process_international_flights_df(raw_df: DataFrame, airport_map_bc):
-    # 1) 메타 정보 추출 + 필수 컬럼만 선별
+def build_base_df(raw_df):
     df = raw_df.select(
         "data.internationalList.results.airlines",
         "data.internationalList.results.fareTypes",
@@ -21,7 +19,7 @@ def process_international_flights_df(raw_df: DataFrame, airport_map_bc):
     ).withColumn("file_path", input_file_name()) \
      .withColumn("fetched_date", regexp_extract("file_path", r"/(\d{4}-\d{2}-\d{2})/", 1)) \
      .withColumn("seat_class_code", regexp_extract("file_path", r"_([YPCF])_", 1))
-
+    
     # seat_class 매핑
     seat_map = create_map(
         lit('Y'), lit('일반석'), lit('P'), lit('이코노미'),
@@ -34,16 +32,18 @@ def process_international_flights_df(raw_df: DataFrame, airport_map_bc):
            .withColumn("fare_types_map", df["fareTypes"]) \
            .withColumn("fares_map", df["fares"]) \
            .withColumn("schedules_arr", df["schedules"])
+    
+    return df
 
+def build_valid_df(base_df, airport_map_bc):
     # timezone map 생성
     tz_map = create_map(*[lit(k).alias(k) for k in []])  # dummy init
     tz_entries = []
     for code, info in airport_map_bc.value.items():
         tz_entries.extend([lit(code), lit(info["time_zone"])])
     tz_map = create_map(*tz_entries)
-
     # explode schedules
-    base = df.select(
+    base = base_df.select(
         "fetched_date", "seat_class", "airlines_map", "fare_types_map", "fares_map",
         explode(col("schedules_arr")).alias("sch_map")
     )
@@ -72,10 +72,12 @@ def process_international_flights_df(raw_df: DataFrame, airport_map_bc):
      .withColumn("depart_ts", to_utc_timestamp(col("depart_local_ts"), tz_map[col("seg.sa")])) \
      .withColumn("arrival_ts", to_utc_timestamp(col("arrival_local_ts"), tz_map[col("seg.ea")])) \
      .withColumn("airline", url_decode(col("airlines_map")[col("seg.av")]))
-    # valid = valid.cache().repartition(col("full_air_id"))
+    
+    return valid
 
-        # FLIGHT_INFO 집계
-    full_df = valid.groupBy("full_air_id").agg(
+
+def build_flight_info_df(valid_df):
+    full_df = valid_df.groupBy("full_air_id").agg(
         Fmin("depart_ts").alias("depart_timestamp"),
         Fmax("arrival_ts").alias("arrival_timestamp"),
         Ffirst("journey_time").alias("journey_time"),
@@ -86,7 +88,7 @@ def process_international_flights_df(raw_df: DataFrame, airport_map_bc):
     ).withColumnRenamed("full_air_id", "air_id")
 
     # 경유 세그먼트 별 독립 레코드 생성 (is_layover=False)
-    seg_df = valid.filter(col("full_air_id").contains("+")) \
+    seg_df = valid_df.filter(col("full_air_id").contains("+")) \
         .withColumn("air_id", element_at(split(col("full_air_id"), "\+"), col("ord")+1)) \
         .withColumn("is_layover", lit(False)) \
         .select(
@@ -103,16 +105,21 @@ def process_international_flights_df(raw_df: DataFrame, airport_map_bc):
     # 최종 합치기
     flight_info_df = full_df.unionByName(seg_df)
 
+    return flight_info_df
 
+def build_layover_info_df(valid_df):
     # LAYOVER_INFO
-    layover_df = valid.withColumn("segment_id", element_at(split(col("full_air_id"),"\\+"),col("ord")+1)) \
+    layover_info_df = valid_df.withColumn("segment_id", element_at(split(col("full_air_id"),"\\+"),col("ord")+1)) \
         .withColumn("layover_order", col("ord")) \
         .withColumn("connect_time", substring(col("seg.ct"),1,2).cast(IntegerType())*60 + substring(col("seg.ct"),3,2).cast(IntegerType())) \
         .select(col("full_air_id").alias("air_id"),"segment_id","layover_order","connect_time")
 
-    # FARE_INFO: left_semi + broadcast + early projection
+    return layover_info_df
+
+
+def build_fare_info_df(flight_info_df, base_df):
     valid_flights = flight_info_df.select("air_id").hint("broadcast")
-    fare_base = df.select("fetched_date","seat_class","fare_types_map",explode(map_entries(col("fares_map"))).alias("fe")) \
+    fare_base = base_df.select("fetched_date","seat_class","fare_types_map",explode(map_entries(col("fares_map"))).alias("fe")) \
         .select(col("fe.key").alias("air_id"),col("fe.value.fare").alias("fare_map"),"fetched_date","seat_class","fare_types_map")
     fees = fare_base.select("air_id","fetched_date","seat_class","fare_types_map",explode(map_entries(col("fare_map"))).alias("ft"))
     fare_url = col("ft.value.priceTransparencyUrl.`#cdata-section`")[0]
@@ -123,13 +130,10 @@ def process_international_flights_df(raw_df: DataFrame, airport_map_bc):
         .withColumn("adult_fare", col("ft.value.Adult.Fare")[0].cast(IntegerType())) \
         .withColumn("fare_class", fare_class_col) \
         .withColumn("agt_code", explode(col("ft.value.AgtCode"))) \
+        .filter(col("option_type") == lit("성인/모든 결제수단")) \
         .select(
-            "air_id","seat_class","option_type","agt_code","adult_fare","fetched_date","fare_class") \
+            "air_id","seat_class","agt_code","adult_fare","fetched_date","fare_class") \
+        .withColumn("fetched_date", to_date(col("fetched_date"), "yyyy-MM-dd")) \
         .join(valid_flights, on="air_id", how="left_semi")
 
-    # 결과 확인
-    # flight_info_df.show(truncate=False)
-    # layover_df.show(truncate=False)
-    # fare_info_df.show(truncate=False)
-    
-    return flight_info_df, layover_df, fare_info_df
+    return fare_info_df
