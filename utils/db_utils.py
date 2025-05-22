@@ -1,64 +1,59 @@
-from spark_json_parser.config.db_config import SQL_QUERIES, QUEUE_MAPPING, COLUMN_ORDER, DatabaseConnectionPool
+from spark_json_parser.config.db_config import  QUERY_MAP_MIGRATION_STAGING, JDBC_PROPS, JDBC_URL, DB_CONFIG
+import psycopg2
+import time
+def write_and_migrate(df, staging_table, dedupe_cols, migration_sql, num_partitions=10, batch_size=20000):
+    """
+    1) 중복 제거 + coalesce
+    2) staging_table에 bulk insert
+    3) psycog2로 migrate+truncate 쿼리
+    """
 
-def save_partition_with_database(partition_iterator, table_name):
-    """각 파티션의 데이터를 DataBase 클래스를 사용하여 데이터베이스에 저장"""
-    from pyspark import TaskContext
-    print(f"{table_name} 파티션 저장 시작 - Partition: {TaskContext.get().partitionId()}")
-    # 파티션 데이터를 리스트로 변환
-    rows = list(partition_iterator)
-    if not rows:
-        return  # 빈 파티션이면 처리하지 않음
-    
-    # 테이블에 맞는 SQL 쿼리 가져오기
-    sql_query = SQL_QUERIES.get(table_name)
-    if not sql_query:
-        print(f"테이블 {table_name}에 대한 SQL 쿼리가 정의되지 않았습니다.")
-        return
-    
-    # 큐 이름 가져오기
-    queue_name = QUEUE_MAPPING.get(table_name)
-    
-    # 컬럼 순서 가져오기
-    cols = COLUMN_ORDER.get(table_name, [])
-    if not cols:
-        print(f"테이블 {table_name}에 대한 컬럼 순서가 정의되지 않았습니다.")
-        return
-    
-    # 각 행을 딕셔너리에서 튜플로 변환
-    params_list = []
-    for row in rows:
-        # row는 Row 객체이므로 dict로 변환 후 처리
-        row_dict = row.asDict()
-        params = tuple(row_dict.get(col) for col in cols)
-        params_list.append(params)
-    
-    # 연결 풀에서 데이터베이스 연결 가져오기
-    db = DatabaseConnectionPool().get_connection(table_name)
-    
-    if not db.connect():
-        print(f"{queue_name}: 데이터베이스 연결 실패")
-        return
-    
-    success, error = db.execute_values_query(queue_name, sql_query, params_list)
-    if success:
-        print(f"{queue_name}: 파티션 데이터 {len(params_list)}개 행 저장 완료")
-    else:
-        print(f"{queue_name}: 데이터 저장 실패 - {error}")
+    start=time.time()
+    df.dropDuplicates(dedupe_cols) \
+      .write \
+      .mode("append") \
+      .format("jdbc") \
+      .option("url", JDBC_URL) \
+      .option("dbtable", staging_table) \
+      .option("batchsize", str(batch_size)) \
+      .option("rewriteBatchedStatements", "true") \
+      .options(**JDBC_PROPS) \
+      .save()
+    mid_end=time.time()
+    print('DB 쓰기 소요시간', int(mid_end-start))
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur  = conn.cursor()
+    cur.execute(migration_sql)  # INSERT…; TRUNCATE…;
+    conn.commit()
+    cur.close()
+    conn.close()
+    end=time.time()
+    print('insert 및 migrate 소요시간', int(end-start))
+    print(f'{staging_table} insert 및 마이그레이션 완료')
 
-def save_flight_data_sequentially(flight_info_df, fare_info_df, layover_info_df=None):
-    """항공편 데이터를 순차적으로 저장하는 함수"""
-    print('순차저장을 시작합니다!!')
-    # 1. 항공편 정보 저장 및 캐싱
-    flight_info_df.foreachPartition(lambda partition: save_partition_with_database(partition, "flight_info"))
-    # 2. 요금 정보 저장
-    fare_info_df.foreachPartition(lambda partition: save_partition_with_database(partition, "fare_info"))
-    # 3. 경유 정보 저장
+def save_flight_data_sequentially(flight_info_df,fare_info_df,layover_info_df=None):
+    # 1) flight_info
+    write_and_migrate(
+        flight_info_df,
+        staging_table="flight_info_staging",
+        dedupe_cols=["air_id"],
+        migration_sql=QUERY_MAP_MIGRATION_STAGING["flight_info"]
+    )
+    
+    # 2) fare_info
+    write_and_migrate(
+        fare_info_df,
+        staging_table="fare_info_staging",
+        dedupe_cols=["air_id", "seat_class", "agt_code", "fetched_date", "fare_class"],
+        migration_sql=QUERY_MAP_MIGRATION_STAGING["fare_info"]
+    )
+
+    # 3) layover_info (존재할 때만)
     if layover_info_df is not None:
-        layover_info_df.foreachPartition(lambda partition: save_partition_with_database(partition, "layover_info"))
-    
-# 데이터베이스 연결 정리 함수
-def cleanup_database_connections():
-    """모든 데이터베이스 연결 정리"""
-    print("데이터베이스 연결 정리 중...")
-    DatabaseConnectionPool().close_all()
-    print("데이터베이스 연결 정리 완료")
+        write_and_migrate(
+            layover_info_df,
+            staging_table="layover_info_staging",
+            dedupe_cols=["air_id", "segment_id", "layover_order"],
+            migration_sql=QUERY_MAP_MIGRATION_STAGING["layover_info"]
+        )
+        
