@@ -3,18 +3,6 @@ import urllib.parse
 import json
 from pytz import timezone as py_timezone
 import re
-import os
-def read_json_file(relative_path):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    target_path = os.path.join(base_dir, '..', relative_path)
-
-    full_path = os.path.abspath(target_path)
-
-    if not os.path.exists(full_path):
-        raise FileNotFoundError(f"경로가 존재하지 않습니다: {full_path}")
-
-    with open(full_path, 'r', encoding='utf-8-sig') as f:
-        return json.load(f)
 
 def decode_url_text(text):
     return urllib.parse.unquote(text)
