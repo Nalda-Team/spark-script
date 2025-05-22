@@ -1,6 +1,6 @@
 import argparse
-from spark_json_parser.utils.common_utils import read_json_file
-from spark_json_parser.utils.db_utils import save_flight_data_sequentially, cleanup_database_connections
+from spark_json_parser.maps.airport_map import airport_map
+from spark_json_parser.utils.db_utils import save_flight_data_sequentially
 from config.spark_session import get_spark_session
 from spark_json_parser.utils.optimize_partition import optimize_partitions
 from spark_json_parser.transformers.domestic_transform import process_domestic_flights_df
@@ -18,7 +18,6 @@ def create_batches(file_list, batch_size=10):
 def process_domestic_batch(spark, file_paths):
     """국내선 항공편 파일 배치 처리"""
     # 매핑 정보 로드
-    airport_map = read_json_file('maps/airport_map.json')
     airport_map_bc = spark.sparkContext.broadcast(airport_map)
     schema = get_domestic_schema()
     df = spark.read.schema(schema).json(file_paths).withColumn("file_path", input_file_name())
@@ -68,9 +67,6 @@ def process_folder_in_batches(bucket_name, folder_path, batch_size=10, file_type
         print(f"배치 {i+1}/{len(batches)} 처리 완료")
     
     print("모든 배치 처리 완료")
-
-    # 데이터베이스 연결 정리
-    cleanup_database_connections()
     
     # Spark 세션 종료
     spark.stop()
