@@ -1,4 +1,4 @@
-from spark_json_parser.config.db_config import  QUERY_MAP_MIGRATION_STAGING, JDBC_PROPS, JDBC_URL, DB_CONFIG
+from spark_json_parser.config.db_config import get_db_config, get_jdbc_url, get_jdbc_props, QUERY_MAP_MIGRATION_STAGING
 import psycopg2
 import time
 def write_and_migrate(df, staging_table, dedupe_cols, migration_sql, num_partitions=10, batch_size=20000):
@@ -7,7 +7,9 @@ def write_and_migrate(df, staging_table, dedupe_cols, migration_sql, num_partiti
     2) staging_table에 bulk insert
     3) psycog2로 migrate+truncate 쿼리
     """
-
+    JDBC_URL = get_jdbc_url()
+    DB_CONFIG = get_db_config()
+    JDBC_PROPS = get_jdbc_props()
     start=time.time()
     df.dropDuplicates(dedupe_cols) \
       .write \
