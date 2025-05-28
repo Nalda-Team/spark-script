@@ -1,26 +1,25 @@
 import os
 
-# 데이터베이스 연결 정보
-DB_CONFIG = {
-    'host': os.environ.get("DB_HOST"),
-    'database': os.environ.get("DB_NAME"),
-    'user': os.environ.get("DB_USER"),
-    'password': os.environ.get("DB_PASSWORD"),
-    'port':'5432'
-}
+def get_db_config():
+    return {
+        'host': os.environ.get("DB_HOST"),
+        'database': os.environ.get("DB_NAME"),
+        'user': os.environ.get("DB_USER"),
+        'password': os.environ.get("DB_PASSWORD"),
+        'port': '5432'
+    }
 
-JDBC_URL = (
-    f"jdbc:postgresql://{DB_CONFIG['host']}:{DB_CONFIG['port']}"
-    f"/{DB_CONFIG['database']}"
-)
+def get_jdbc_url():
+    cfg = get_db_config()
+    return f"jdbc:postgresql://{cfg['host']}:{cfg['port']}/{cfg['database']}"
 
-JDBC_PROPS = {
-    "user": DB_CONFIG["user"],
-    "password": DB_CONFIG["password"],
-    "driver": "org.postgresql.Driver",
-    "rewriteBatchedStatements": "true",
-    "batchsize": "20000",
-}
+def get_jdbc_props():
+    return {
+        "user": os.environ.get("DB_USER"),
+        "password": os.environ.get("DB_PASSWORD"),
+        "driver": "org.postgresql.Driver",
+        "rewriteBatchedStatements": "true"
+    }
 
 QUERY_MAP_MIGRATION_STAGING = {
   "flight_info": """
