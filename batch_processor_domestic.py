@@ -7,7 +7,7 @@ from spark_json_parser.transformers.domestic_transform import process_domestic_f
 from spark_json_parser.config.schemas import get_domestic_schema
 from spark_json_parser.utils.gcs_utils import list_gcs_files
 from pyspark.sql.functions import input_file_name
-
+import os
 def create_batches(file_list, batch_size=10):
     """파일 목록을 배치로 분할"""
     batches = []
@@ -43,7 +43,7 @@ def process_domestic_batch(spark, file_paths):
         print('국내선 처리 실패')
 
 
-def process_folder_in_batches(bucket_name, folder_path, batch_size=10, file_type='domestic'):
+def process_folder_in_batches(bucket_name, folder_path, batch_size=10):
     """폴더 내 파일들을 배치로 처리"""
     # Spark 세션 생성
     spark = get_spark_session()
@@ -53,7 +53,7 @@ def process_folder_in_batches(bucket_name, folder_path, batch_size=10, file_type
     file_list = list_gcs_files(spark, bucket_name, folder_path)
     
     # 파일 타입에 따라 필터링
-    file_list = [f"gs://{bucket_name}/{file}" for file in file_list if file.endswith(f'{file_type}.json')]
+    file_list = [f"gs://{bucket_name}/{file}" for file in file_list if file.endswith(f'domestic.json')]
     print(f"총 {len(file_list)}개 파일 발견")
     
     # 배치 생성
@@ -75,37 +75,65 @@ def main():
     # ArgumentParser 생성
     parser = argparse.ArgumentParser(description='국내선 항공편 데이터 배치 처리 스크립트')
     
+    parser.add_argument('--LOCAL_FLAG',
+                        type=str,
+                        default='N',
+                        help='로컬 실행 여부')
+    
+    parser.add_argument('--DB_HOST',
+                        type=str,
+                        default=None,
+                        help='DB 호스트 주소')
+    
+    parser.add_argument('--DB_USER',
+                        type=str,
+                        default=None,
+                        help='DB 유저')
+    
+    parser.add_argument('--DB_PASSWORD',
+                        type=str,
+                        default=None,
+                        help='DB 비밀번호')
+    
+    parser.add_argument('--DB_NAME',
+                        type=str,
+                        default=None,
+                        help='DB 이름')
+    
     # 인자 추가
     parser.add_argument('--bucket', 
                         type=str, 
-                        default='origin_fetched_flight_data_bucket', 
-                        help='GCS 버킷 이름 (기본값: origin_fetched_flight_data_bucket)')
+                        default=None, 
+                        help='GCS 버킷 이름')
     
     parser.add_argument('--folder', 
                         type=str, 
-                        default='2025-04-22', 
+                        default=None, 
                         help='처리할 폴더 경로 (기본값: 2025-04-22)')
     
     parser.add_argument('--batch-size', 
                         type=int, 
-                        default=100, 
-                        help='배치당 파일 수 (기본값: 100)')
-    
-    parser.add_argument('--file-type', 
-                        type=str, 
-                        default='domestic', 
-                        choices=['domestic', 'international'], 
-                        help='처리할 파일 타입 (기본값: domestic)')
+                        default=60, 
+                        help='배치당 파일 수 (기본값: 60)')
     
     # 인자 파싱
     args = parser.parse_args()
-    
+    if args.DB_HOST:
+        os.environ['DB_HOST'] = args.DB_HOST
+    if args.DB_USER:
+        os.environ['DB_USER'] = args.DB_USER
+    if args.DB_PASSWORD:
+        os.environ['DB_PASSWORD'] = args.DB_PASSWORD
+    if args.DB_NAME:
+        os.environ['DB_NAME'] = args.DB_NAME
+    if args.LOCAL_FLAG:
+        os.environ['LOCAL_FLAG'] = args.LOCAL_FLAG
+    print(vars(args))
     # 주 처리 함수 호출
     process_folder_in_batches(
         bucket_name=args.bucket, 
         folder_path=args.folder, 
         batch_size=args.batch_size,
-        file_type=args.file_type
     )
 
 if __name__ == "__main__":

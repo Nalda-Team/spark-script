@@ -8,6 +8,8 @@ from config.schemas import get_international_schema
 from spark_json_parser.utils.gcs_utils import list_gcs_files
 from pyspark.sql.functions import input_file_name
 import time
+import os
+
 def create_batches(file_list, batch_size=10):
     """파일 목록을 배치로 분할"""
     batches = []
@@ -98,26 +100,60 @@ def process_folder_in_batches(bucket_name, folder_path, batch_size=10):
 
 def main():
     parser = argparse.ArgumentParser(description='국제선 항공편 데이터 배치 처리 스크립트')
+    parser.add_argument('--LOCAL_FLAG',
+                        type=str,
+                        default='N',
+                        help='로컬 실행 여부')
+    parser.add_argument('--DB_HOST',
+                        type=str,
+                        default=None,
+                        help='DB 호스트 주소')
+    
+    parser.add_argument('--DB_USER',
+                        type=str,
+                        default=None,
+                        help='DB 유저')
+    
+    parser.add_argument('--DB_PASSWORD',
+                        type=str,
+                        default=None,
+                        help='DB 비밀번호')
+    
+    parser.add_argument('--DB_NAME',
+                        type=str,
+                        default=None,
+                        help='DB 이름')
+    
     parser.add_argument(
         '--bucket',
         type=str,
         default='origin_fetched_flight_data_bucket',
-        help='GCS 버킷 이름 (기본값: origin_fetched_flight_data_bucket)'
+        help='GCS 버킷 이름'
     )
     parser.add_argument(
         '--folder',
         type=str,
-        default='2025-04-22',
-        help='처리할 폴더 경로 (기본값: 2025-04-22)'
+        default=None,
+        help='처리할 폴더 경로 (기본값: 2025-04-30/international)'
     )
     parser.add_argument(
         '--batch-size',
         type=int,
         default=60,
-        help='배치당 파일 수 (기본값: 50)'
+        help='배치당 파일 수 (기본값: 60)'
     )
     args = parser.parse_args()
-
+    if args.DB_HOST:
+        os.environ['DB_HOST'] = args.DB_HOST
+    if args.DB_USER:
+        os.environ['DB_USER'] = args.DB_USER
+    if args.DB_PASSWORD:
+        os.environ['DB_PASSWORD'] = args.DB_PASSWORD
+    if args.DB_NAME:
+        os.environ['DB_NAME'] = args.DB_NAME
+    if args.LOCAL_FLAG:
+        os.environ['LOCAL_FLAG'] = args.LOCAL_FLAG
+    print(vars(args))
     process_folder_in_batches(
         bucket_name=args.bucket,
         folder_path=args.folder,

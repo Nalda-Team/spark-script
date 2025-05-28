@@ -9,11 +9,12 @@ from spark_json_parser.config.schemas import get_international_schema
 from config.spark_session import get_spark_session
 import time
 from pyspark.sql.streaming import StreamingQueryException
-
+import os
 def process_international_stream(batch_df, batch_id):
     """스트리밍 배치 단위로 국내선 항공편 처리"""
     process_start=time.time()
     print(f"배치 ID {batch_id} 처리 시작")
+    # print(os.environ['DB_HOST'], os.environ['DB_USER'],os.environ['DB_PASSWORD'], os.environ['DB_NAME'])
     # 브로드캐스트용 매핑 로드
     airport_map_bc = batch_df.sparkSession.sparkContext.broadcast(airport_map)
 
@@ -123,27 +124,49 @@ def process_folder_in_stream(bucket_name, folder_prefix, checkpoint_dir,
 def main():
     # ArgumentParser 생성
     parser = argparse.ArgumentParser(description='국제선 항공편 스트리밍 데이터 처리 스크립트')
+    parser.add_argument('--LOCAL_FLAG',
+                        type=str,
+                        default='N',
+                        help='로컬 실행 여부')
+    parser.add_argument('--DB_HOST',
+                        type=str,
+                        default=None,
+                        help='DB 호스트 주소')
     
+    parser.add_argument('--DB_USER',
+                        type=str,
+                        default=None,
+                        help='DB 유저')
+    
+    parser.add_argument('--DB_PASSWORD',
+                        type=str,
+                        default=None,
+                        help='DB 비밀번호')
+    
+    parser.add_argument('--DB_NAME',
+                        type=str,
+                        default=None,
+                        help='DB 이름')
     # 인자 추가
     parser.add_argument('--bucket', 
                         type=str, 
-                        default='origin_fetched_flight_data_bucket', 
-                        help='GCS 버킷 이름 (기본값: origin_fetched_flight_data_bucket)')
+                        default=None, 
+                        help='GCS 버킷 이름')
     
     parser.add_argument('--folder', 
                         type=str, 
-                        default='2025-04-30/international', 
+                        default=None, 
                         help='처리할 폴더 경로 (기본값: 2025-04-30/international)')
     
     parser.add_argument('--checkpoint-dir', 
                         type=str, 
                         default=None, 
-                        help='체크포인트 디렉토리 (기본값: gs://spark-checkpoint-bucket/flight-data-streaming/international/날짜)')
+                        help='체크포인트 디렉토리 (기본값: gs://{버킷 이름}/{폴더이름}/international/날짜)')
     
     parser.add_argument('--max-files', 
                         type=int, 
-                        default=30, 
-                        help='트리거당 최대 파일 수 (기본값: 300)')
+                        default=60, 
+                        help='트리거당 최대 파일 수 (기본값: 60)')
     
     parser.add_argument('--processing-interval', 
                         type=str, 
@@ -152,17 +175,23 @@ def main():
     
     parser.add_argument('--timeout', 
                         type=int, 
-                        default=10, 
-                        help='데이터 없을 경우 타임아웃 시간(분) (기본값: 10)')
+                        default=30, 
+                        help='데이터 없을 경우 타임아웃 시간(분) (기본값: 30)')
     
     # 인자 파싱
     args = parser.parse_args()
-    
-    # 체크포인트 디렉토리 기본값 설정
-    if args.checkpoint_dir is None:
-        today = datetime.now().strftime("%Y-%m-%d")
-        args.checkpoint_dir = f"gs://nalda-spark-streaming-checkpoint-bucket/flight-data-streaming/international/{today}"
-    
+    if args.DB_HOST:
+        os.environ['DB_HOST'] = args.DB_HOST
+    if args.DB_USER:
+        os.environ['DB_USER'] = args.DB_USER
+    if args.DB_PASSWORD:
+        os.environ['DB_PASSWORD'] = args.DB_PASSWORD
+    if args.DB_NAME:
+        os.environ['DB_NAME'] = args.DB_NAME
+    if args.LOCAL_FLAG:
+        os.environ['LOCAL_FLAG'] = args.LOCAL_FLAG
+    print("ARGS:", vars(args))
+    # print(os.environ['DB_HOST'], os.environ['DB_USER'],os.environ['DB_PASSWORD'], os.environ['DB_NAME'])
     # 주 처리 함수 호출
     process_folder_in_stream(
         bucket_name=args.bucket, 
