@@ -3,8 +3,6 @@ query_map={
     
     "fare_info": "INSERT INTO fare_info \n        (air_id, seat_class, agt_code, adult_fare, fetched_date, fare_class)\n        VALUES %s\n        ON CONFLICT (air_id, seat_class, agt_code, fetched_date, fare_class) DO UPDATE\n        SET adult_fare = EXCLUDED.adult_fare",    
     
-    "temp_fare_info": "INSERT INTO temp_fare_info (air_id, seat_class, agt_code, adult_fare, fetched_date, fare_class) VALUES %s\n        ON CONFLICT (air_id, seat_class, agt_code, fetched_date, fare_class) DO UPDATE\n        SET adult_fare = EXCLUDED.adult_fare",
-    
     "layover_info": "INSERT INTO layover_info (air_id, segment_id, layover_order, connect_time)\n        VALUES %s\n        ON CONFLICT (air_id, segment_id, layover_order) DO UPDATE\n        SET            connect_time = EXCLUDED.connect_time",
     
     "airport_info": "INSERT INTO airport_info\n        (airport_code, name, country, time_zone) \n        VALUES %s\n        ON CONFLICT (airport_code) DO UPDATE\n        SET airport_code = EXCLUDED.airport_code,\n            name = EXCLUDED.name,\n            country = EXCLUDED.country,\n            time_zone = EXCLUDED.time_zone"
