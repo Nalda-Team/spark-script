@@ -26,7 +26,7 @@ def get_spark_session(local_flag='Y'):
         .config("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
         .config("spark.hadoop.google.cloud.auth.service.account.json.keyfile", os.path.abspath(SERVICE_ACCOUNT_KEY_PATH)) \
         .config("spark.driver.maxResultSize", "2560m") \
-        .config("spark.driver.memory", "2560mg") \
+        .config("spark.driver.memory", "2560m") \
         .config("spark.executor.memory", "2560m") \
         .config("spark.sql.shuffle.partitions", '4') \
         .getOrCreate()
