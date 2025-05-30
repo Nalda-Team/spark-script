@@ -1,57 +1,69 @@
-from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
-    col, input_file_name, regexp_extract,
-    explode, concat, lit, to_date,to_timestamp
+    input_file_name, regexp_extract, lit, explode, col, concat, 
+    to_utc_timestamp, expr, to_timestamp,create_map, lit, to_date, udf
 )
-from pyspark.sql.types import StringType, IntegerType, TimestampType
-from pyspark.sql.functions import udf
-from spark_json_parser.utils.common_utils import convert_to_utc_str
+from pyspark.sql.types import TimestampType
 
-def process_domestic_flights_df(df: DataFrame, airport_map_bc):
-    # 1) attach file_path and fetched_date
+def build_base_df(df, timezone_map_bc):
+    @udf()
+    def get_timezone(airport_code):
+        return timezone_map_bc.value.get(airport_code, "UTC")
+    
+    seat_map = create_map(
+        lit('Y'), lit('일반석'), lit('D'), lit('할인석'),
+        lit('L'), lit('특가석'), lit('C'), lit('비즈니스석')
+    )
+    
     df = df.withColumn("file_path", input_file_name()) \
-           .withColumn("fetched_date", regexp_extract("file_path", r"/(\d{4}-\d{2}-\d{2})/", 1))
-
-    # 2) explode departures and preserve fetched_date
+           .withColumn("fetched_date", regexp_extract(col("file_path"), r"/(\d{4}-\d{2}-\d{2})/", 1))
+    
     schedules = df.select(
         explode(col("data.domesticFlights.departures")).alias("sch"),
         col("file_path"),
         col("fetched_date")
     ).select("sch.*", "file_path", "fetched_date")
-
-    # 3) UDF definitions
-    get_option_type = udf(lambda s: {'Y':'일반석','D':'할인석','L':'특가석','C':'비즈니스석'}.get(s, '기타'), StringType())
-    calc_journey = udf(lambda jt: 0 if jt is None or len(jt)<5 else int(jt[:2])*60 + int(jt[3:]), IntegerType())
-    convert_dt = udf(lambda ts, city: convert_to_utc_str(ts, city, airport_map_bc.value), StringType())
-
-    # 4) datetime source columns (already YYYYMMDDHHmm)
-    schedules = schedules.withColumn("dep_dt_src", col("departureDate")) \
-                         .withColumn("arr_dt_src", col("arrivalDate"))
-
-    # 5) enrich base DataFrame
+    
     base = schedules \
         .withColumn("air_id", concat(
             col("departureDate"), col("depCity"), col("arrCity"),
             col("airlineCode"), col("fitName"), col("seatClass")
         )) \
-        .withColumn("depart_ts_str",  convert_dt(col("dep_dt_src"), col("depCity"))) \
-        .withColumn("arrival_ts_str", convert_dt(col("arr_dt_src"), col("arrCity"))) \
-        .withColumn("option_type",    get_option_type(col("seatClass"))) \
-        .withColumn("journey_time",   calc_journey(col("journeyTime")))
+        .withColumn("depart_local_ts", to_timestamp(col("departureDate"), "yyyyMMddHHmm")) \
+        .withColumn("arrival_local_ts", to_timestamp(col("arrivalDate"), "yyyyMMddHHmm")) \
+        .withColumn("dep_timezone", get_timezone(col("depCity"))) \
+        .withColumn("arr_timezone", get_timezone(col("arrCity"))) \
+        .withColumn("depart_timestamp", to_utc_timestamp(
+            col("depart_local_ts"), col("dep_timezone")
+        )) \
+        .withColumn("arrival_timestamp", to_utc_timestamp(
+            col("arrival_local_ts"), col("arr_timezone")
+        )) \
+        .withColumn("option_type", seat_map[col("seatClass")]) \
+        .withColumn("journey_time", expr("cast(substring(journeyTime, 1, 2) as int) * 60 + cast(substring(journeyTime, 4, 2) as int)"))
+    
+    return base.select(
+    "air_id", "airlineName", "depCity", "arrCity", 
+    "depart_local_ts", "arrival_local_ts", "depart_timestamp", "arrival_timestamp",
+    "journey_time", "option_type", "fare", "fetched_date"
+    )
 
-    # 6) flight_info_df
-    flight_info_df = base.select(
+def build_flight_info_df(base_df):
+    flight_info_df = base_df.select(
         "air_id",
         col("airlineName").alias("airline"),
         col("depCity").alias("depart_airport"),
-        col("depart_ts_str").cast(TimestampType()).alias("depart_timestamp"),
+        col("depart_timestamp").cast(TimestampType()),
+        col("depart_local_ts").cast(TimestampType()),
         col("arrCity").alias("arrival_airport"),
-        col("arrival_ts_str").cast(TimestampType()).alias("arrival_timestamp"),
+        col("arrival_timestamp").cast(TimestampType()),
+        col("arrival_local_ts").cast(TimestampType()),
         col("journey_time")
     ).withColumn("is_layover", lit(False))
 
-    # 7) fare_info_df
-    fare_exploded = base.select("air_id", "option_type", explode(col("fare")).alias("f"), "fetched_date")
+    return flight_info_df
+
+def build_fare_info_df(base_df):
+    fare_exploded = base_df.select("air_id", "option_type", explode(col("fare")).alias("f"), "fetched_date")
     fare_info_df = fare_exploded.select(
         "air_id",
         col("option_type").alias("seat_class"),
@@ -61,7 +73,24 @@ def process_domestic_flights_df(df: DataFrame, airport_map_bc):
         lit("n").alias("fare_class")
     )
 
-    # flight_info_df.show(truncate=False)
-    # fare_info_df.show(truncate=False)
+    return fare_info_df
 
-    return flight_info_df, fare_info_df
+from pyspark.sql.functions import concat, lit, coalesce, avg, expr, count, col
+from pyspark.sql.types import IntegerType
+def build_agg_df(flight_info_df, fare_info_df):
+   
+   joined_df = flight_info_df.join(fare_info_df, "air_id", "inner")
+   
+   agg_df = joined_df \
+       .withColumn("depart_date", to_date(col("depart_local_ts"))) \
+       .withColumn("airline", coalesce(col("airline"), lit("airline 여러개"))) \
+       .groupBy(
+           "depart_airport", "arrival_airport", "depart_date", "is_layover", 
+           "airline", "seat_class", "fare_class", "fetched_date"
+       ) \
+       .agg(
+            avg("adult_fare").cast(IntegerType()).alias("mean_price"),
+            expr("cast(percentile_approx(adult_fare, 0.5) as int)").alias("median_price"),
+            count("*").alias("ticket_count")
+        )
+   return agg_df
